@@ -1,0 +1,8 @@
+# frontend/requirements.txt
+streamlit
+requests
+python-dotenv
+sseclient-py
+python-docx
+sseclient
+
