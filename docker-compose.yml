@@ -1,17 +1,18 @@
 version: '3.9'
 
 services:
+  # ───────── Banco de Dados ─────────
   postgres:
     image: postgres:13
-    container_name: airflow_postgres
+    container_name: rag_postgres
     environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
-      POSTGRES_DB: airflow
+      POSTGRES_USER: ${POSTGRES_USER:-rag_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag_password}
+      POSTGRES_DB: ${POSTGRES_DB:-rag_database}
     volumes:
-      - postgres-db-volume:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "airflow"]
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-rag_user}"]
       interval: 10s
       retries: 5
       start_period: 5s
@@ -20,33 +21,10 @@ services:
     networks:
       - network
 
-  redis:
-    image: redis:7.2-bookworm
-    container_name: airflow_redis
-    expose:
-      - 6379
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 30s
-      retries: 50
-      start_period: 30s
-    networks:
-      - network
-
-  mongodb:
-    image: mongo:6
-    container_name: rag_mongodb
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo_data:/data/db
-    networks:
-      - network
-
+  # ───────── Search Engine ─────────
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.15.1
-    container_name: elasticsearch
+    container_name: rag_elasticsearch
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
@@ -55,9 +33,8 @@ services:
       - http.port=9200
     ports:
       - "9200:9200"
-      - "9300:9300"
     volumes:
-      - elastic-search-data:/usr/share/elasticsearch/data
+      - elasticsearch_data:/usr/share/elasticsearch/data
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
       interval: 30s
@@ -67,160 +44,58 @@ services:
     networks:
       - network
 
-  # ─────────────────── Airflow ────────────────────
-  airflow-init:
-      build: ./airflow
-      container_name: airflow_init
-      entrypoint: ["/entrypoint"]
-      command: ["airflow", "db", "init"]
-      environment:
-        AIRFLOW__CORE__EXECUTOR: LocalExecutor
-        AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-        _AIRFLOW_DB_MIGRATE: 'true'
-        _AIRFLOW_WWW_USER_CREATE: 'true'
-        _AIRFLOW_WWW_USER_USERNAME: airflow
-        _AIRFLOW_WWW_USER_PASSWORD: airflow
-        AIRFLOW__METRICS__STATSD_ON: 'True'
-        AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
-        AIRFLOW__METRICS__STATSD_PORT: '9125'
-      volumes:
-        - ./airflow:/opt/airflow
-      user: "0:0"
-      depends_on:
-        postgres:
-          condition: service_healthy
-      networks:
-        - network
-
-  airflow-webserver:
-    build: ./airflow
-    container_name: airflow_webserver
-    command: webserver
-    restart: always
-    ports:
-      - "8080:8080"
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-      AIRFLOW__CORE__FERNET_KEY: ''
-      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
-      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-      AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth'
-      # Metrics via StatsD
-      AIRFLOW__METRICS__STATSD_ON: 'True'
-      AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
-      AIRFLOW__METRICS__STATSD_PORT: '9125'
-    volumes:
-      - ./airflow/dags:/opt/airflow/dags
-      - ./airflow/logs:/opt/airflow/logs
-      - ./airflow/plugins:/opt/airflow/plugins
-    depends_on:
-      postgres:
-        condition: service_healthy
-      airflow-init:
-        condition: service_completed_successfully
-    networks:
-      - network
-
-  airflow-scheduler:
-    build: ./airflow
-    container_name: airflow_scheduler
-    command: scheduler
-    restart: always
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-      # Metrics via StatsD
-      AIRFLOW__METRICS__STATSD_ON: 'True'
-      AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
-      AIRFLOW__METRICS__STATSD_PORT: '9125'
-    volumes:
-      - ./airflow/dags:/opt/airflow/dags
-      - ./airflow/logs:/opt/airflow/logs
-      - ./airlow/plugins:/opt/airflow/plugins
-    depends_on:
-      postgres:
-        condition: service_healthy
-      airflow-init:
-        condition: service_completed_successfully
-    networks:
-      - network
-
-  airflow-triggerer:
-    build: ./airflow
-    container_name: airflow_triggerer
-    command: triggerer
-    restart: always
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
-      # Metrics via StatsD
-      AIRFLOW__METRICS__STATSD_ON: 'True'
-      AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
-      AIRFLOW__METRICS__STATSD_PORT: '9125'
-    volumes:
-      - ./airflow/dags:/opt/airflow/dags
-      - ./airflow/logs:/opt/airflow/logs
-      - ./airflow/plugins:/opt/airflow/plugins
-    depends_on:
-      postgres:
-        condition: service_healthy
-      airflow-init:
-        condition: service_completed_successfully
-    networks:
-      - network
-
-  # ───────── RAG API + Frontend ─────────
+  # ───────── Backend API ─────────
   fastapi:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: fastapi
+    container_name: rag_api
     restart: always
     env_file:
       - .env
     working_dir: /app
-    command: uvicorn main:app --host 0.0.0.0 --port 8001
+    command: uvicorn main:app --host 0.0.0.0 --port 8001 --reload
     ports:
       - "8001:8001"
     environment:
       - ELASTICSEARCH_HOST=http://elasticsearch:9200
       - POSTGRES_HOST=postgres
-      - POSTGRES_DB=airflow
-      - POSTGRES_USER=airflow
-      - POSTGRES_PASSWORD=airflow
-      - MONGO_URI=mongodb://mongodb:27017
-      - LLM_API_URL=https://api.openai.com/v1/chat/completions
+      - POSTGRES_DB=${POSTGRES_DB:-rag_database}
+      - POSTGRES_USER=${POSTGRES_USER:-rag_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-rag_password}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - LLM_API_URL=https://api.openai.com/v1/chat/completions
     volumes:
+      # Volumes temporários para uploads/outputs
       - uploads_vol:/tmp/uploads
       - outputs_vol:/tmp/outputs
-      - ./data:/app/data
+      - ./backend:/app
     depends_on:
       postgres:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
-      mongodb:
-        condition: service_started
     networks:
       - network
 
+  # ───────── Frontend ─────────
   streamlit:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: rag_streamlit
+    container_name: rag_app
     restart: always
     ports:
       - "8501:8501"
     environment:
       - API_URL=http://fastapi:8001
+      - DEBUG_MODE=true
       - ELASTICSEARCH_HOST=http://elasticsearch:9200
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     volumes:
+      # Volumes temporários compartilhados
       - uploads_vol:/tmp/uploads
       - outputs_vol:/tmp/outputs
       - ./frontend:/app
@@ -232,68 +107,23 @@ services:
         condition: service_healthy
     networks:
       - network
+    command: streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true
 
-
+  # ───────── Proxy Reverso ─────────
   nginx:
-    image: nginx:alpine
-    container_name: rag_nginx
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+    container_name: rag_proxy
     ports:
       - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - streamlit
       - fastapi
-      - airflow-webserver
-      - grafana
     networks:
       - network
     restart: always
 
-  # ───────── Monitoramento ─────────
-  statsd-exporter:
-    image: prom/statsd-exporter:latest
-    ports:
-      - "9125:9125/udp"   # ingestão StatsD
-      - "9102:9102"       # endpoint HTTP /metrics
-    networks:
-      - network
-
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: prometheus
-    volumes:
-      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    ports:
-      - "9090:9090"
-    depends_on:
-      - statsd-exporter
-    networks:
-      - network
-
-  grafana:
-    image: grafana/grafana
-    container_name: grafana
-    restart: always
-    ports:
-      - "3000:3000"
-    env_file:
-      - .env
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
-      - GF_SERVER_ROOT_URL=https://grafana.seudominio.com
-    volumes:
-      - grafana-storage:/var/lib/grafana
-      - grafana-plugins:/var/lib/grafana/plugins
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      prometheus:
-        condition: service_started
-    networks:
-      - network  
 
 networks:
   network:
@@ -301,9 +131,10 @@ networks:
 
 volumes:
   uploads_vol:
+    driver: local
   outputs_vol:
-  postgres-db-volume:
-  mongo_data:
-  elastic-search-data:
-  grafana-storage:
-  grafana-plugins:
+    driver: local
+  postgres_data:
+    driver: local
+  elasticsearch_data:
+    driver: local

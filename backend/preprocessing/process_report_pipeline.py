@@ -23,7 +23,7 @@ from pypdf import PdfReader
 @dataclass
 class Config:
     summary_model: str = os.getenv("SUMMARY_MODEL", "gpt-4o-mini")
-    report_model:  str = os.getenv("REPORT_MODEL",  "claude-3-sonnet-20240229")
+    report_model:  str = os.getenv("REPORT_MODEL",  "claude-sonnet-4-20250514")
     temperature:   float = float(os.getenv("TEMPERATURE", 0.3))
     max_tokens:    int = int(os.getenv("MAX_TOKENS", 2048))
     fallback_chars:int = int(os.getenv("FALLBACK_CHARS", 8000))
@@ -50,11 +50,73 @@ def classify_page(txt: str) -> str:
             return lab
     return "outros"
 
-def group_pages(pages: List, cfg: Config) -> Dict[str, List[str]]:
+def extract_process_number(first_page_text: str) -> Optional[str]:
+    """
+    Extrai o número do processo da primeira página do PDF
+    """
+    if not first_page_text:
+        return None
+    
+    # Padrões de número de processo (ordem de prioridade)
+    patterns = [
+        # Formato CNJ padrão: 0000000-00.0000.0.00.0000
+        r'\b\d{7}-\d{2}\.\d{4}\.\d{1}\.\d{2}\.\d{4}\b',
+        
+        # Formato CNJ com mais dígitos: 0000000000-00.0000.0.00.0000
+        r'\b\d{10}-\d{2}\.\d{4}\.\d{1}\.\d{2}\.\d{4}\b',
+        
+        # Formato antigo: 0000.00.000000-0
+        r'\b\d{4}\.\d{2}\.\d{6}-\d{1}\b',
+        
+        # Padrões com texto: "Número: 0000000-00.0000.0.00.0000"
+        r'(?:número|processo|autos)(?:\s*:?\s*|\s+n[º°]?\.?\s*)(\d{7}-\d{2}\.\d{4}\.\d{1}\.\d{2}\.\d{4})',
+        
+        # Padrões com texto mais genéricos
+        r'(?:processo|autos)(?:\s+n[º°]?\.?\s*|\s+)(\d+[-\.\d]+)',
+        
+        # Padrão específico do PJe: "Processo Eletrônico nº ..."
+        r'processo\s+eletr[ôo]nico\s+n[º°]?\s*(\d{7}-\d{2}\.\d{4}\.\d{1}\.\d{2}\.\d{4})',
+    ]
+    
+    text_lower = first_page_text.lower()
+    
+    for i, pattern in enumerate(patterns):
+        matches = re.findall(pattern, text_lower, re.IGNORECASE)
+        if matches:
+            # Para padrões com grupo de captura, pega o grupo
+            if i >= 3:  # Padrões com grupos de captura
+                number = matches[0] if isinstance(matches[0], str) else matches[0]
+            else:  # Padrões diretos
+                number = matches[0]
+            
+            # Validação adicional para formato CNJ
+            if re.match(r'\d{7}-\d{2}\.\d{4}\.\d{1}\.\d{2}\.\d{4}', number):
+                return number
+            elif re.match(r'\d{10}-\d{2}\.\d{4}\.\d{1}\.\d{2}\.\d{4}', number):
+                return number
+            elif len(number) > 10:  # Outros formatos longos
+                return number
+    
+    return None
+
+def group_pages(pages: List, cfg: Config) -> tuple[Dict[str, List[str]], Optional[str]]:
+    """
+    Agrupa páginas por tipo de peça e extrai número do processo da primeira página
+    """
     groups: Dict[str, List[str]] = {}
     cur: Optional[str] = None
     buf: List[str] = []
+    process_number = None
+    
     for i, p in enumerate(pages):
+        # Extrai número do processo da primeira página
+        if i == 0:
+            process_number = extract_process_number(p.page_content)
+            if process_number:
+                log(f"📋 Número do processo identificado: {process_number}", cfg)
+            else:
+                log("⚠️ Número do processo não encontrado na primeira página", cfg)
+        
         lab = classify_page(p.page_content)
         if lab != cur:
             if buf:
@@ -63,9 +125,11 @@ def group_pages(pages: List, cfg: Config) -> Dict[str, List[str]]:
             cur = lab
             log(f"→ nova peça '{lab}' na página {i+1}", cfg)
         buf.append(p.page_content)
+    
     if buf:
         groups.setdefault(cur or "outros", []).append("\n".join(buf))
-    return groups
+    
+    return groups, process_number
 
 # ─────────────────────────────── prompts ──────────────────────────────────
 SUMMARY_PT = PromptTemplate(
@@ -79,7 +143,49 @@ SUMMARY_PT = PromptTemplate(
     input_variables=["texto"],
 )
 
-INSTRUCOES = textwrap.dedent("""
+# Prompt modificado para incluir número do processo
+INSTRUCOES_COM_PROCESSO = textwrap.dedent("""
+    TAREFA
+    Elabore um relatório analítico e detalhado do processo judicial fornecido, com base nos documentos constantes dos autos. Utilize estilo direto, informando de maneira objetiva o conteúdo de cada ato processual relevante, com a respectiva identificação por ID.
+
+    NÚMERO DO PROCESSO
+    O processo tem o número: {numero_processo}
+
+    INSTRUÇÕES ESPECÍFICAS
+    - Inicie o relatório com "Processo nº {numero_processo}"
+    - Não inclua os títulos formais das peças (ex: "Petição Inicial", "Despacho", "Decisão", etc.).
+    - Identifique os atos com uma frase introdutória direta e o número do ID entre parênteses, como nos exemplos abaixo:
+      - Foi concedida a justiça gratuita (ID 36457517).
+      - Tutela de urgência deferida (ID 37574668).
+      - Réplica apresentada (ID 42715461).
+    - Ao tratar de manifestações das partes (petições), explique brevemente seu conteúdo jurídico.
+    - Na contestação, redija um parágrafo mais desenvolvido, contendo:
+      - Os principais fatos narrados;
+      - Os fundamentos jurídicos alegados;
+      - O pedido final;
+      - E se foram juntados documentos e procurações.
+    - A Réplica deve ser indicada apenas com a frase: "Réplica no ID ___.", sem síntese adicional.
+    - Inclua todas as petições, exceto as de habilitação de advogado.
+    - Ignore todas as certidões, exceto:
+      - Certidões de citação positiva;
+      - Certidões de decurso de prazo (ex: "decorrido o prazo sem manifestação").
+
+    MODELO DE FORMATAÇÃO DO RELATÓRIO
+    Processo nº {numero_processo}
+    
+    Vistos, etc.
+    NOME DO AUTOR, qualificado na inicial, por intermédio de advogado legalmente habilitado por instrumento de mandado, propôs AÇÃO EM ITÁLICO contra NOME DO RÉU, também qualificado, com o objetivo de sintetizar o pedido da ação em minúsculas.
+    A parte autora alegou que [...] (ID: ___).
+    Foi deferida a gratuidade judiciária (ID: ___).
+    Tutela de urgência concedida [...] (ID: ___).
+    Contestação apresentada (ID: ___), na qual a parte ré [...]
+    Réplica no ID ___.
+    Manifestação da parte autora [...] (ID ___).
+    Decurso de prazo certificado (ID ___).
+    [Outros atos relevantes, em sequência cronológica].
+""")
+
+INSTRUCOES_SEM_PROCESSO = textwrap.dedent("""
     TAREFA
     Elabore um relatório analítico e detalhado do processo judicial fornecido, com base nos documentos constantes dos autos. Utilize estilo direto, informando de maneira objetiva o conteúdo de cada ato processual relevante, com a respectiva identificação por ID.
 
@@ -250,10 +356,20 @@ def summarize(text: str, cfg: Config) -> str:
         # Retorna um resumo básico em caso de erro
         return f"Documento processado com {len(text)} caracteres."
 
-def build_report(atos: str, cfg: Config) -> str:
+def build_report(atos: str, process_number: Optional[str], cfg: Config) -> str:
+    """
+    Constrói o relatório final, incluindo número do processo se disponível
+    """
     try:
         llm = get_llm(cfg.report_model, cfg)
-        formatted_prompt = REPORT_PT.format(instr=INSTRUCOES, linhas_atos=atos)
+        
+        # Escolhe as instruções corretas baseado na disponibilidade do número do processo
+        if process_number:
+            instructions = INSTRUCOES_COM_PROCESSO.format(numero_processo=process_number)
+        else:
+            instructions = INSTRUCOES_SEM_PROCESSO
+        
+        formatted_prompt = REPORT_PT.format(instr=instructions, linhas_atos=atos)
         
         if hasattr(llm, "invoke"):
             resp = llm.invoke({"prompt": formatted_prompt})
@@ -262,12 +378,20 @@ def build_report(atos: str, cfg: Config) -> str:
         
         # CORREÇÃO: Usa função auxiliar para extrair texto de forma segura
         content = _extract_text_safely(resp)
+        
+        # Se temos número do processo mas ele não aparece no início do relatório, adiciona
+        if process_number and not content.strip().startswith(f"Processo nº {process_number}"):
+            content = f"Processo nº {process_number}\n\n{content.strip()}"
+        
         return content.strip()
     
     except Exception as e:
         print(f"Erro na função build_report: {e}", file=sys.stderr)
         # Retorna um relatório básico em caso de erro
-        return f"Relatório: Processo analisado com base nos atos processuais fornecidos.\n\n{atos}"
+        if process_number:
+            return f"Processo nº {process_number}\n\nRelatório: Processo analisado com base nos atos processuais fornecidos.\n\n{atos}"
+        else:
+            return f"Relatório: Processo analisado com base nos atos processuais fornecidos.\n\n{atos}"
 
 def clean_textblock_artifacts(text: str) -> str:
     """
@@ -323,8 +447,13 @@ def generate(
         if on_progress:
             on_progress(msg)
 
-        # 2) Agrupa por peça
-        grupos = group_pages(pages, cfg)
+        # 2) Agrupa por peça e extrai número do processo
+        grupos, process_number = group_pages(pages, cfg)
+        
+        if process_number:
+            log(f"✅ Processo identificado: {process_number}", cfg)
+            if on_progress:
+                on_progress(f"📋 Processo nº {process_number} identificado")
 
         # 3) Lê e resume chunks
         linhas: List[str] = []
@@ -361,7 +490,8 @@ def generate(
         if on_progress:
             on_progress(start_msg)
         
-        report = build_report(atos, cfg)
+        # Passa o número do processo para o build_report
+        report = build_report(atos, process_number, cfg)
         
         # LIMPEZA FINAL: Remove qualquer artefato de TextBlock restante
         report_limpo = clean_textblock_artifacts(report)

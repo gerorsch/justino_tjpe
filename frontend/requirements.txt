@@ -1,8 +1,8 @@
 # frontend/requirements.txt
-streamlit
-requests
-python-dotenv
-sseclient-py
-python-docx
-sseclient
+streamlit==1.28.2
+requests==2.31.0
+pandas==2.1.3
+python-dotenv==1.0.0
+sseclient-py==1.7.2
+python-docx==0.8.11
 
