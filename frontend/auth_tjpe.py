@@ -393,10 +393,54 @@ def check_authentication() -> bool:
     return False
 
 def show_login_page():
-    """Login em 2 etapas dentro do card, com fluxo correto de sessão."""
-    auth = st.session_state.auth_manager  # seu manager já carregado
-
-    # Injeta seu CSS (omito aqui por brevidade; deixe o mesmo que você já usa)
+    """Login em 2 etapas dentro do card, com fluxo correto de sessão + ACESSO DIRETO."""
+    auth = st.session_state.auth_manager
+    
+    # CSS para styling
+    st.markdown("""
+    <style>
+    .login-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 70vh;
+        padding: 2rem;
+    }
+    .login-box {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 20px;
+        padding: 3rem;
+        box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+        color: white;
+        text-align: center;
+        min-width: 400px;
+    }
+    .login-box h1 {
+        margin-bottom: 0.5rem;
+        font-size: 2.5rem;
+        font-weight: 700;
+    }
+    .login-box p {
+        margin-bottom: 2rem;
+        opacity: 0.9;
+        font-size: 1.1rem;
+    }
+    .direct-access-warning {
+        background: rgba(255, 193, 7, 0.2);
+        border-left: 4px solid #ffc107;
+        padding: 1rem;
+        margin: 1rem 0;
+        border-radius: 0 10px 10px 0;
+        color: #fff3cd;
+    }
+    .login-footer {
+        text-align: center;
+        margin-top: 3rem;
+        color: #64748b;
+        font-size: 0.9rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
     placeholder = st.empty()
 
@@ -404,7 +448,7 @@ def show_login_page():
     if "login_step" not in st.session_state:
         st.session_state.login_step = "email"
 
-    # ETAPA 1: Captura e-mail e envia código
+    # ETAPA 1: Captura e-mail e envia código (COM ACESSO DIRETO)
     if st.session_state.login_step == "email":
         with placeholder.form("email_form"):
             st.markdown('<div class="login-container"><div class="login-box">', unsafe_allow_html=True)
@@ -416,23 +460,74 @@ def show_login_page():
                 placeholder="seu.nome@tjpe.jus.br",
                 key="login_email"
             )
-            send_btn = st.form_submit_button("➡️ Enviar código")
+            
+            # Botões organizados em colunas
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                send_btn = st.form_submit_button("➡️ Enviar código", type="primary")
+            
+            with col2:
+                # BOTÃO DE ACESSO DIRETO PARA ADMIN
+                if email_input == "george.queiroz@tjpe.jus.br":
+                    direct_access_btn = st.form_submit_button("🔧 Acesso Direto", type="secondary")
+                else:
+                    direct_access_btn = False
+            
+            # Aviso sobre acesso direto (só aparece para admin)
+            if email_input == "george.queiroz@tjpe.jus.br":
+                st.markdown("""
+                <div class="direct-access-warning">
+                    <strong>⚠️ Modo Desenvolvimento:</strong><br>
+                    Acesso direto disponível para administrador durante testes.
+                </div>
+                """, unsafe_allow_html=True)
+            
             st.markdown("</div></div>", unsafe_allow_html=True)
 
-        if send_btn:
-            if email_input and email_input.endswith("@tjpe.jus.br"):
-                # Salva o e-mail para a próxima etapa
-                st.session_state.verification_email = email_input
-                # Dispara geração/ envio do código
-                auth.create_verification_code(email_input)
-
+        # PROCESSAMENTO DO ACESSO DIRETO
+        if direct_access_btn and email_input == "george.queiroz@tjpe.jus.br":
+            # Verifica se é usuário aprovado
+            if auth.is_user_approved(email_input):
+                # Cria sessão diretamente
+                token = auth.create_session(email_input)
+                
+                # Marca como autenticado
+                st.session_state.session_token = token
+                st.session_state.authenticated = True
+                st.session_state.user_info = auth.get_user_info(email_input)
+                
                 placeholder.empty()
-                st.success(f"Código enviado para {email_input}")
-                st.session_state.login_step = "code"
+                st.success("✅ Acesso direto autorizado! Bem-vindo, Admin.")
                 time.sleep(1)
                 st.rerun()
             else:
-                st.error("Use um e-mail institucional válido (@tjpe.jus.br).")
+                st.error("❌ Usuário não autorizado no sistema.")
+
+        # PROCESSAMENTO DO ENVIO DE CÓDIGO (método normal)
+        if send_btn:
+            if email_input and email_input.endswith("@tjpe.jus.br"):
+                if auth.is_user_approved(email_input):
+                    # Salva o e-mail para a próxima etapa
+                    st.session_state.verification_email = email_input
+                    # Dispara geração/envio do código
+                    if auth.create_verification_code(email_input):
+                        placeholder.empty()
+                        st.success(f"📧 Código enviado para {email_input}")
+                        
+                        # Mostrar código na tela em modo debug
+                        if os.getenv("DEBUG_MODE", "false").lower() == "true":
+                            st.info("🔑 **Modo Debug:** Código padrão é `123456`")
+                        
+                        st.session_state.login_step = "code"
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("❌ Erro ao enviar código. Tente novamente.")
+                else:
+                    st.error("❌ E-mail não autorizado. Contacte o administrador.")
+            else:
+                st.error("❌ Use um e-mail institucional válido (@tjpe.jus.br).")
         return
 
     # ETAPA 2: Verifica código e cria sessão
@@ -440,39 +535,58 @@ def show_login_page():
         with placeholder.form("code_form"):
             st.markdown('<div class="login-container"><div class="login-box">', unsafe_allow_html=True)
             st.markdown("<h1>🔐 Confirme seu acesso</h1>", unsafe_allow_html=True)
-            st.markdown("<p>Digite o código que enviamos por e-mail</p>", unsafe_allow_html=True)
+            st.markdown(f"<p>Digite o código enviado para:<br><strong>{st.session_state.get('verification_email', '')}</strong></p>", unsafe_allow_html=True)
 
             code_input = st.text_input(
                 "Código de autenticação",
                 placeholder="123456",
-                key="login_code"
+                key="login_code",
+                max_chars=6
             )
-            validate_btn = st.form_submit_button("🔓 Validar código")
+            
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                validate_btn = st.form_submit_button("🔓 Validar código", type="primary")
+            
+            with col2:
+                back_btn = st.form_submit_button("← Voltar", type="secondary")
+            
+            # Dica em modo debug
+            if os.getenv("DEBUG_MODE", "false").lower() == "true":
+                st.info("🔑 **Modo Debug:** Use código `123456`")
+            
             st.markdown("</div></div>", unsafe_allow_html=True)
 
+        # Voltar para tela de e-mail
+        if back_btn:
+            st.session_state.login_step = "email"
+            placeholder.empty()
+            st.rerun()
+
+        # Validar código
         if validate_btn:
             email = st.session_state.get("verification_email", "")
-            code  = st.session_state.get("login_code", "")
+            code = st.session_state.get("login_code", "")
 
-            # Agora email e code NUNCA serão None
             if auth.verify_code(email, code):
                 # Cria sessão no backend
                 token = auth.create_session(email)
 
                 # Marca como autenticado
-                st.session_state.session_token   = token
-                st.session_state.authenticated    = True
-                st.session_state.user_info       = auth.get_user_info(email)
+                st.session_state.session_token = token
+                st.session_state.authenticated = True
+                st.session_state.user_info = auth.get_user_info(email)
 
                 placeholder.empty()
                 st.success(f"✅ Bem-vindo, {st.session_state.user_info['full_name']}!")
                 time.sleep(1)
                 st.rerun()
             else:
-                st.error("Código inválido. Tente novamente.")
+                st.error("❌ Código inválido ou expirado. Tente novamente.")
         return
 
-    # 5) Rodapé fora do placeholder (opcional)
+    # Rodapé
     st.markdown("""
     <div class="login-footer">
       🏛️ Sistema de Geração Automática de Sentenças • Suporte:
@@ -535,23 +649,11 @@ def show_admin_panel():
                 auth_manager = st.session_state.auth_manager
                 
                 if not auth_manager.is_tjpe_email(new_email):
-                    st.markdown("""
-                    <div class="custom-error">
-                        <span class="icon">❌</span> Apenas e-mails @tjpe.jus.br
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.error("❌ Apenas e-mails @tjpe.jus.br")
                 elif auth_manager.add_approved_user(new_email, new_name):
-                    st.markdown(f"""
-                    <div class="custom-success">
-                        <span class="icon">✅</span> Usuário {new_email} adicionado!
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.success(f"✅ Usuário {new_email} adicionado!")
                 else:
-                    st.markdown("""
-                    <div class="custom-warning">
-                        <span class="icon">⚠️</span> Usuário já existe
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.warning("⚠️ Usuário já existe")
     
     # Listar usuários
     st.markdown("#### 📋 Usuários Autorizados")

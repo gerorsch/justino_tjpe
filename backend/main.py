@@ -10,6 +10,8 @@ from typing import List, Optional, AsyncGenerator
 
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+import os
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -21,6 +23,86 @@ from services.docx_parser import parse_docx_bytes
 
 app = FastAPI(title="RAG TJPE API")
 
+
+# Configurar CORS
+
+# Configurar CORS para produção
+def get_allowed_origins():
+    """Retorna lista de origens permitidas baseada no ambiente"""
+    
+    # URLs de produção para justino.digital
+    production_origins = [
+        "https://justino.digital",
+        "https://www.justino.digital",
+        "https://api.justino.digital",
+    ]
+    
+    # URLs de desenvolvimento local
+    development_origins = [
+        "http://localhost:8501",
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8501",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8000",
+    ]
+    
+    # Verificar se está em produção ou desenvolvimento
+    environment = os.getenv("ENVIRONMENT", "development").lower()
+    
+    if environment == "production":
+        # Apenas URLs de produção
+        allowed_origins = production_origins.copy()
+        
+        # Adicionar URLs customizadas da variável de ambiente
+        custom_origins = os.getenv("ALLOWED_ORIGINS", "")
+        if custom_origins:
+            custom_list = [origin.strip() for origin in custom_origins.split(",") if origin.strip()]
+            allowed_origins.extend(custom_list)
+            
+    else:
+        # Desenvolvimento: incluir localhost + produção para testes
+        allowed_origins = development_origins + production_origins
+        
+        # Adicionar URLs customizadas
+        custom_origins = os.getenv("ALLOWED_ORIGINS", "")
+        if custom_origins:
+            custom_list = [origin.strip() for origin in custom_origins.split(",") if origin.strip()]
+            allowed_origins.extend(custom_list)
+    
+    # Remover duplicatas mantendo ordem
+    seen = set()
+    unique_origins = []
+    for origin in allowed_origins:
+        if origin not in seen:
+            seen.add(origin)
+            unique_origins.append(origin)
+    
+    return unique_origins
+
+# Obter origens permitidas
+allowed_origins = get_allowed_origins()
+
+# Log das origens para debug (remover em produção se necessário)
+print(f"🌐 CORS - Origens permitidas: {allowed_origins}")
+
+# Configurar middleware CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,  # URLs específicas em produção
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+# Resto do seu código FastAPI...
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "environment": os.getenv("ENVIRONMENT", "development"),
+        "allowed_origins": len(allowed_origins)
+    }
 
 # ─────────────────────────── Eventos de Inicialização ───────────────────────────
 
@@ -177,9 +259,9 @@ def limpar_arquivo_temporario(path: str) -> None:
 
 # ─────────────────────────── Health‐check ───────────────────────────
 
-@app.get("/health")
-async def health():
-    return {"status": "ok", "timestamp": time.time()}
+# @app.get("/health")
+# async def health():
+#     return {"status": "ok", "timestamp": time.time()}
 
 
 # ───────────────────────── Rotas REST (síncronas) ──────────────────────
