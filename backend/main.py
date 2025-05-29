@@ -20,7 +20,7 @@ from services.retrieval_rerank import recuperar_documentos_similares as semantic
 from services.llm import gerar_sentenca_llm
 from services.docx_utils import salvar_sentenca_como_docx, salvar_docs_referencia
 from services.docx_parser import parse_docx_bytes
-from sentence_indexing_rag import setup_elasticsearch
+from preprocessing.sentence_indexing_rag import setup_elasticsearch
 
 app = FastAPI(title="RAG TJPE API")
 
