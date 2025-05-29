@@ -20,6 +20,7 @@ from services.retrieval_rerank import recuperar_documentos_similares as semantic
 from services.llm import gerar_sentenca_llm
 from services.docx_utils import salvar_sentenca_como_docx, salvar_docs_referencia
 from services.docx_parser import parse_docx_bytes
+from sentence_indexing_rag import setup_elasticsearch
 
 app = FastAPI(title="RAG TJPE API")
 
@@ -109,8 +110,10 @@ async def health_check():
 @app.on_event("startup")
 async def startup_event():
     """
-    Limpa arquivos temporários antigos na inicialização
+    1) Limpa arquivos /tmp
+    2) Garante que o índice do Elasticsearch exista e, se vazio, popule com sentenças
     """
+    # ———————————— limpeza atual ————————————
     print("🧹 Limpando arquivos temporários antigos...")
     now = time.time()
     patterns = ["/tmp/sentenca_*.docx", "/tmp/referencias_*.zip", "/tmp/*.pdf"]
@@ -127,6 +130,17 @@ async def startup_event():
     
     if removed_count > 0:
         print(f"✅ Removidos {removed_count} arquivos temporários antigos")
+    
+    # ———————————— novo bloco ————————————
+    print("🔍 Configurando Elasticsearch (índice + dados)…")
+    try:
+        setup_elasticsearch()
+        print("✅ Elasticsearch pronto para uso")
+    except Exception as e:
+        print(f"❌ Falha no setup do Elasticsearch: {e}")
+        # opcional: raise para abortar startup
+        # raise
+
 
 
 # ─────────────────────────── Utilitários ───────────────────────────
