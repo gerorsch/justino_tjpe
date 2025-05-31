@@ -14,19 +14,49 @@ load_dotenv()
 
 class ElasticsearchSetup:
     def __init__(self):
-        # Configuração Elasticsearch
-        self.es_host    = os.getenv("ELASTICSEARCH_HOST", "http://elasticsearch:9200")
+        """
+        Inicializa:
+          • Cliente Elasticsearch (priorizando Elastic Cloud)
+          • Cliente OpenAI
+        Variáveis esperadas em produção
+          ELASTIC_CLOUD_ID        id do deployment (ex.: "mydeploy:ZGZmLm…")
+          ELASTICSEARCH_API_KEY   api-key gerada no Cloud
+          ELASTICSEARCH_INDEX     nome do índice (default: sentencas_rag)
+          -- opcionalmente --
+          ELASTICSEARCH_HOST      http(s)://host:port   (em dev/local)
+        """
+        cloud_id = os.getenv("ELASTIC_CLOUD_ID")
+        api_key  = os.getenv("ELASTICSEARCH_API_KEY")
+        host     = os.getenv("ELASTICSEARCH_HOST")      # só use em dev/local
         self.index_name = os.getenv("ELASTICSEARCH_INDEX", "sentencas_rag")
-        self.es         = Elasticsearch(hosts=[self.es_host])
 
-        # Configuração OpenAI
+        if cloud_id and api_key:
+            print(f"🔌 ElasticsearchSetup → usando Elastic Cloud ({cloud_id.split(':',1)[0]})")
+            self.es = Elasticsearch(
+                cloud_id=cloud_id,
+                api_key=api_key,
+                headers={"Accept": "application/vnd.elasticsearch+json; compatible-with=8"}
+            )
+        elif host:
+            print(f"🔌 ElasticsearchSetup → usando host explícito {host}")
+            self.es = Elasticsearch(
+                hosts=[host],
+                headers={"Accept": "application/vnd.elasticsearch+json; compatible-with=8"},
+                verify_certs=host.startswith("https")
+            )
+        else:
+            raise RuntimeError(
+                "🛑 Defina ELASTIC_CLOUD_ID + ELASTICSEARCH_API_KEY (produção) "
+                "ou ELASTICSEARCH_HOST (desenvolvimento)"
+            )
+
+        # ─── OpenAI ──────────────────────────────────────────────────────────
         openai_key = os.getenv("OPENAI_API_KEY")
         if not openai_key:
             raise ValueError("❌ OPENAI_API_KEY não encontrada nas variáveis de ambiente")
         self.openai_client = OpenAI(api_key=openai_key)
 
-        print(f"→ Conectando ao Elasticsearch em {self.es_host}")
-        print("→ Cliente OpenAI configurado")
+        print("✅ Cliente OpenAI configurado")
 
     def wait_for_elasticsearch(self, max_retries: int = 30):
         """Aguarda Elasticsearch ficar disponível"""
