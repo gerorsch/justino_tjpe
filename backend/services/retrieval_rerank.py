@@ -5,18 +5,31 @@ from typing import List, Dict
 from sentence_transformers import CrossEncoder
 from elasticsearch import Elasticsearch, exceptions as es_exceptions
 from preprocessing.sentence_indexing_rag import ElasticsearchSetup
+from elasticsearch import Elasticsearch
 
-# ───────────────────────────────────────────────────
-# Configurações e conexões
-# ───────────────────────────────────────────────────
-ES_HOST = os.getenv("ELASTICSEARCH_HOST", "http://localhost:9200")
-INDEX_NAME = os.getenv("ES_INDEX", "sentencas_rag")
+CLOUD_ID = os.getenv("ELASTIC_CLOUD_ID")          # ex.: "mydeploy:ZGZmLm…"
+API_KEY  = os.getenv("ELASTICSEARCH_API_KEY")    # ex.: "ZXlKMW…"
+HOST     = os.getenv("ELASTICSEARCH_HOST")       # opcional
 
-es = Elasticsearch(
-    ES_HOST,
-    headers={"Accept": "application/vnd.elasticsearch+json; compatible-with=8"}
-)
+if CLOUD_ID and API_KEY:
+    print(f"🔌 retrieval_rerank: usando Elastic Cloud ({CLOUD_ID.split(':',1)[0]})")
+    es = Elasticsearch(
+        cloud_id=CLOUD_ID,
+        api_key=API_KEY,
+        headers={"Accept": "application/vnd.elasticsearch+json; compatible-with=8"}
+    )
+elif HOST:
+    print(f"🔌 retrieval_rerank: usando host {HOST}")
+    es = Elasticsearch(
+        HOST,
+        headers={"Accept": "application/vnd.elasticsearch+json; compatible-with=8"},
+        verify_certs=HOST.startswith("https")
+    )
+else:
+    raise RuntimeError("🛑 Defina ELASTIC_CLOUD_ID/API_KEY ou ELASTICSEARCH_HOST")
 
+# Nome do índice (use um único nome em todo o projeto)
+INDEX_NAME = os.getenv("ELASTICSEARCH_INDEX", "sentencas_rag")
 # ───────────────────────────────────────────────────
 # Instância lazy do CrossEncoder
 # ───────────────────────────────────────────────────
