@@ -396,48 +396,65 @@ def show_login_page():
     """Login em 2 etapas dentro do card, com fluxo correto de sessão + ACESSO DIRETO."""
     auth = st.session_state.auth_manager
     
-    # CSS para styling
+   # 1) INJETAR CSS para container, caixa interna e estilos de campo/botão
     st.markdown("""
     <style>
     .login-container {
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        min-height: 70vh;
-        padding: 2rem;
+        max-width: 500px;
+        margin: 10vh auto;
+        padding: 0;
     }
     .login-box {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        border-radius: 20px;
-        padding: 3rem;
-        box-shadow: 0 20px 40px rgba(0,0,0,0.3);
-        color: white;
-        text-align: center;
-        min-width: 400px;
+        background-color: #273449;
+        border-radius: 0.5rem;
+        padding: 2rem;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
     }
     .login-box h1 {
-        margin-bottom: 0.5rem;
-        font-size: 2.5rem;
-        font-weight: 700;
+        margin: 0;
+        text-align: center;
+        color: #f1f5f9;
+        font-size: 1.75rem;
+        font-weight: 600;
     }
     .login-box p {
-        margin-bottom: 2rem;
-        opacity: 0.9;
-        font-size: 1.1rem;
+        margin: 0.5rem 0 1.5rem;
+        text-align: center;
+        color: #cbd5e1;
+        font-size: 0.9rem;
     }
-    .direct-access-warning {
-        background: rgba(255, 193, 7, 0.2);
-        border-left: 4px solid #ffc107;
-        padding: 1rem;
-        margin: 1rem 0;
-        border-radius: 0 10px 10px 0;
-        color: #fff3cd;
+    .login-box .stTextInput>div>div>input {
+        width: 100%;
+        background-color: #1e293b;
+        color: #f1f5f9;
+        border: 1px solid #334155;
+        border-radius: 0.375rem;
+        padding: 0.75rem 1rem;
+        margin-bottom: 1rem;
+    }
+    .login-box .stTextInput>div>div>input::placeholder {
+        color: #94a3b8;
+    }
+    .login-box .stButton>button {
+        width: 100%;
+        background-color: transparent;
+        color: #f1f5f9;
+        border: 1px solid #f1f5f9;
+        border-radius: 0.375rem;
+        padding: 0.75rem;
+        font-size: 1rem;
+        font-weight: 500;
+        margin-top: 0.5rem;
+        transition: background-color .2s ease-in-out;
+    }
+    .login-box .stButton>button:hover {
+        background-color: rgba(255,255,255,0.1);
     }
     .login-footer {
         text-align: center;
-        margin-top: 3rem;
-        color: #64748b;
-        font-size: 0.9rem;
+        font-size: 0.8rem;
+        color: #94a3b8;
+        margin-top: 1rem;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -451,7 +468,7 @@ def show_login_page():
     # ETAPA 1: Captura e-mail e envia código (COM ACESSO DIRETO)
     if st.session_state.login_step == "email":
         with placeholder.form("email_form"):
-            st.markdown('<div class="login-container"><div class="login-box">', unsafe_allow_html=True)
+            # st.markdown('<div class="login-container"><div class="login-box">', unsafe_allow_html=True)
             st.markdown("<h1>⚖️ Justino Digital</h1>", unsafe_allow_html=True)
             st.markdown("<p>13ª Vara Cível – TJPE<br>Sistema Restrito</p>", unsafe_allow_html=True)
 
@@ -484,6 +501,7 @@ def show_login_page():
                 """, unsafe_allow_html=True)
             
             st.markdown("</div></div>", unsafe_allow_html=True)
+        
 
         # PROCESSAMENTO DO ACESSO DIRETO
         if direct_access_btn and email_input == "george.queiroz@tjpe.jus.br":
@@ -533,7 +551,7 @@ def show_login_page():
     # ETAPA 2: Verifica código e cria sessão
     if st.session_state.login_step == "code":
         with placeholder.form("code_form"):
-            st.markdown('<div class="login-container"><div class="login-box">', unsafe_allow_html=True)
+            # st.markdown('<div class="login-container"><div class="login-box">', unsafe_allow_html=True)
             st.markdown("<h1>🔐 Confirme seu acesso</h1>", unsafe_allow_html=True)
             st.markdown(f"<p>Digite o código enviado para:<br><strong>{st.session_state.get('verification_email', '')}</strong></p>", unsafe_allow_html=True)
 
@@ -552,9 +570,9 @@ def show_login_page():
             with col2:
                 back_btn = st.form_submit_button("← Voltar", type="secondary")
             
-            # Dica em modo debug
-            if os.getenv("DEBUG_MODE", "false").lower() == "true":
-                st.info("🔑 **Modo Debug:** Use código `123456`")
+            # # Dica em modo debug
+            # if os.getenv("DEBUG_MODE", "false").lower() == "true":
+            #     st.info("🔑 **Modo Debug:** Use código `123456`")
             
             st.markdown("</div></div>", unsafe_allow_html=True)
 

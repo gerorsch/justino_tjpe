@@ -5,7 +5,9 @@ import anthropic
 
 load_dotenv()
 
-# Parâmetros de configuração
+# ───────────────────────────────────────────────────
+# Parâmetros de configuração para o LLM (Anthropic)
+# ───────────────────────────────────────────────────
 LLM_MODEL = os.getenv("LLM_MODEL", "claude-sonnet-4-20250514")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "2048"))
@@ -13,71 +15,54 @@ LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "2048"))
 # Inicializa o client da Anthropic
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
+
 def _extract_text_from_response(response_content) -> str:
     """
     Extrai o texto da resposta do Claude de forma segura.
-    A API do Anthropic retorna response.content como uma lista de TextBlocks.
+    A API do Anthropic retorna response.content como lista de TextBlocks ou string.
     """
     if not response_content:
         return ""
-    
-    # CORREÇÃO: Verificar se é uma string diretamente
     if isinstance(response_content, str):
         return response_content
-    
-    # CORREÇÃO: Se é lista de TextBlocks (caso comum)
+
+    # Se for lista de TextBlocks (caso comum)
     if isinstance(response_content, list):
         text_parts = []
         for block in response_content:
             if hasattr(block, 'text'):
-                # Objeto TextBlock com atributo text
                 text_parts.append(str(block.text))
             elif isinstance(block, dict) and 'text' in block:
-                # Dicionário com chave text
                 text_parts.append(str(block['text']))
             elif isinstance(block, str):
-                # String direta
                 text_parts.append(block)
             else:
-                # Converte para string e loga para debug
-                text_str = str(block)
-                print(f"⚠️ Tipo inesperado de bloco: {type(block)} - {text_str[:100]}")
-                text_parts.append(text_str)
-        
+                text_parts.append(str(block))
         result = ''.join(text_parts)
-        # CORREÇÃO: Normaliza quebras de linha
-        result = result.replace('\\n', '\n').replace('\\r', '')
-        return result
-    
-    # Fallback final
+        return result.replace('\\n', '\n').replace('\\r', '')
+
+    # Fallback genérico
     result = str(response_content)
-    result = result.replace('\\n', '\n').replace('\\r', '')
-    return result
+    return result.replace('\\n', '\n').replace('\\r', '')
+
 
 async def _call_llm(prompt: str, on_progress: Optional[Callable[[str], None]] = None) -> str:
     """
-    Chama a API da Anthropic (Claude) e retorna a resposta do modelo.
+    Chama a API da Anthropic (Claude) e retorna a resposta do modelo em texto puro.
     """
     try:
         if on_progress:
             on_progress("🤖 Consultando Claude...")
-            
         response = client.messages.create(
             model=LLM_MODEL,
             max_tokens=LLM_MAX_TOKENS,
             temperature=LLM_TEMPERATURE,
-            messages=[
-                {"role": "user", "content": prompt}
-            ]
+            messages=[{"role": "user", "content": prompt}]
         )
-        
         if on_progress:
             on_progress("📝 Processando resposta...")
-        
-        # CORREÇÃO: Extrai o texto corretamente da resposta
         text = _extract_text_from_response(response.content)
         return text.strip()
-        
     except Exception as e:
         error_msg = f"Erro na chamada da API Anthropic: {e}"
         print(error_msg)
@@ -85,17 +70,20 @@ async def _call_llm(prompt: str, on_progress: Optional[Callable[[str], None]] = 
             on_progress(f"❌ {error_msg}")
         return f"Erro na geração de conteúdo: {str(e)}"
 
+
 async def gerar_resposta_llm(pergunta: str, documentos: List[dict]) -> str:
     """
-    Gera uma resposta genérica para uma pergunta, utilizando o texto dos documentos como contexto.
+    Gera uma resposta genérica para uma pergunta, usando o texto dos documentos como contexto.
     """
     try:
+        # Usa relatorio ou, como fallback, 'text' (caso a chave relatorio tenha sido sobrescrita)
         context = "\n\n".join([doc.get("relatorio") or doc.get("text", "") for doc in documentos])
         prompt = f"Contexto:\n{context}\n\nPergunta: {pergunta}\nResposta:"
         return await _call_llm(prompt)
     except Exception as e:
         print(f"Erro em gerar_resposta_llm: {e}")
         return f"Erro ao gerar resposta: {str(e)}"
+
 
 async def gerar_sentenca_llm(
     relatorio: str, 
@@ -105,54 +93,50 @@ async def gerar_sentenca_llm(
     **kwargs
 ) -> str:
     """
-    Gera a fundamentação e o dispositivo de uma sentença judicial com base no relatório e em documentos de referência.
-    
-    Args:
-        relatorio: O relatório do processo
-        docs: Lista de documentos de referência
-        instrucoes_usuario: Instruções adicionais do usuário (opcional)
-        on_progress: Callback para updates de progresso (opcional)
-        **kwargs: Parâmetros adicionais (ignorados, para compatibilidade)
+    Gera a fundamentação e o dispositivo de uma sentença judicial com base no relatório
+    e em documentos de referência (cada dicionário em docs deve ter a chave 'relatorio').
     """
     try:
-        # Validação de entrada
+        # 1) Validação de entrada
         if not relatorio or not relatorio.strip():
             error_msg = "Erro: Relatório não fornecido ou vazio."
             if on_progress:
                 on_progress(f"❌ {error_msg}")
             return error_msg
-        
+
         if not docs:
             error_msg = "Erro: Nenhum documento de referência fornecido."
             if on_progress:
                 on_progress(f"❌ {error_msg}")
             return error_msg
-        
+
         if on_progress:
             on_progress("📚 Preparando documentos de referência...")
-        
-        # Constrói os exemplos dos documentos
+
+        # 2) Constrói exemplos dos documentos, usando apenas 'relatorio' (já preenchido)
         exemplos = []
-        for i, d in enumerate(docs, 1):
-            exemplo = f"Exemplo {i}:\n"
-            
-            if d.get('relatorio'):
-                exemplo += f"Relatório: {d['relatorio'][:500]}...\n\n"
-            
-            if d.get('fundamentacao'):
-                exemplo += f"Fundamentação: {d['fundamentacao'][:1000]}...\n\n"
-            
-            if d.get('dispositivo'):
-                exemplo += f"Dispositivo: {d['dispositivo'][:500]}...\n"
-            
-            exemplos.append(exemplo)
-        
+        for i, d in enumerate(docs, start=1):
+            trecho = f"Exemplo {i}:\n"
+            rel = d.get('relatorio', "")
+            if rel:
+                trecho += f"Relatório: {rel[:500]}...\n\n"
+            fund = d.get('fundamentacao')
+            if fund:
+                trecho += f"Fundamentação: {fund[:1000]}...\n\n"
+            disp = d.get('dispositivo')
+            if disp:
+                trecho += f"Dispositivo: {disp[:500]}...\n"
+            exemplos.append(trecho)
+
         contexto = "\n\n---\n\n".join(exemplos)
 
-        # Adiciona as instruções do usuário se fornecidas
+        # 3) Instruções adicionais do usuário (se existirem)
         instrucoes_adicionais = ""
         if instrucoes_usuario and instrucoes_usuario.strip():
-            instrucoes_adicionais = f"\n\n### INSTRUÇÕES ADICIONAIS DO USUÁRIO:\n{instrucoes_usuario.strip()}\n"
+            instrucoes_adicionais = (
+                "\n\n### INSTRUÇÕES ADICIONAIS DO USUÁRIO:\n" 
+                + instrucoes_usuario.strip() + "\n"
+            )
 
         if on_progress:
             on_progress("✍️ Montando prompt da sentença...")
@@ -215,22 +199,18 @@ Juíza de Direito"
 - Siga rigorosamente a estrutura indicada.
 - Certifique-se de que o texto final está coeso, coerente e tecnicamente preciso.
 - Não omita nenhum dos elementos obrigatórios da sentença.
-- As citações devem ser exatamente iguais às dos documentos de referência.
+- As citações de leis, doutrina e jurisprudência devem ser exatamente iguais às dos documentos de referência.
 """
-        
         if on_progress:
             on_progress("🎯 Gerando sentença...")
-        
         resultado = await _call_llm(prompt, on_progress)
-        
         if on_progress:
             on_progress("✅ Sentença gerada com sucesso!")
-        
         return resultado
-        
+
     except Exception as e:
-        error_msg = f"Erro na geração da sentença: {str(e)}"
+        error_msg = f"Erro na geração da sentença: {e}"
         print(error_msg)
         if on_progress:
             on_progress(f"❌ {error_msg}")
-        return f"Erro ao gerar sentença: {str(e)}"
+        return f"Erro ao gerar sentença: {e}"

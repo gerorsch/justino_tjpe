@@ -162,18 +162,19 @@ def main_app():
 
     # ═══════════════════════════════ BARRA LATERAL ═══════════════════════════════
     st.sidebar.title("📋 Instruções de Uso")
+    #         # Informações do usuário logado
+    # user_info = st.session_state.user_info
+    # st.markdown("---")
+    # st.success(f"👤 **{user_info['full_name']}**")
+    # st.caption(f"📧 {user_info['email']}")
+    
+    # # Painel admin se for administrador
+    # if user_info.get('is_admin'):
+    #     if st.button("👥 Gerenciar Usuários", key="btn_nav_users"):
+    #             show_admin_panel()
 
     with st.sidebar:
-        # Informações do usuário logado
-        user_info = st.session_state.user_info
-        st.markdown("---")
-        st.success(f"👤 **{user_info['full_name']}**")
-        st.caption(f"📧 {user_info['email']}")
-        
-        # Painel admin se for administrador
-        if user_info.get('is_admin'):
-            if st.button("👥 Gerenciar Usuários", key="btn_nav_users"):
-                show_admin_panel()
+
         
         st.markdown("---")
         
