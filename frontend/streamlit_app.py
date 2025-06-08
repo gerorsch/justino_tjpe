@@ -421,7 +421,7 @@ def main_app():
                           "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
                         for f in arquivos_ref or []
                     ],
-                    timeout=600  # 10 minutos
+                    timeout=1800  # 10 minutos
                 )
                 
             time_warning.empty()  # Remove o aviso após o processamento
