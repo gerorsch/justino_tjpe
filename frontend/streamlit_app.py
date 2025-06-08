@@ -105,22 +105,6 @@ def gerar_nome_arquivo_sentenca(numero: str | None = None) -> str:
         return f"sentenca_{numero}_{datetime.now():%Y%m%d}.docx"
     return f"sentenca_{datetime.now():%Y%m%d_%H%M%S}.docx"
 
-# ─── App principal ───────────────────────────────────────────────────────────
-
-@require_authentication
-def main_app():
-    """Corpo principal da interface."""
-
-    # ── Session State default ────────────────────────────────────────────
-    ss = st.session_state
-    ss.setdefault("relatorio", None)
-    ss.setdefault("relatorio_processado", False)
-    ss.setdefault("sentenca_texto", None)
-    ss.setdefault("sentenca_processada", False)
-    ss.setdefault("sentenca_bytes", None)
-    ss.setdefault("referencias_bytes", None)
-    ss.setdefault("numero_processo", None)
-
     # Sidebar e instruções (idêntico – omitido neste trecho para brevidade)
     # ═══════════════════════════════ BARRA LATERAL ═══════════════════════════════
     st.sidebar.title("📋 Instruções de Uso")
@@ -216,9 +200,19 @@ def main_app():
 
     st.markdown("<br><br><br><br>", unsafe_allow_html=True)
 
-    # ─────────────────────────────── Seção 1 ──────────────────────────────────
+# ─── App principal ───────────────────────────────────────────────────────────
 
-    # ───────────── Seção 1 · Extração do Relatório ──────────────────────
+@require_authentication
+def main_app():
+    ss = st.session_state
+    ss.setdefault("relatorio", None)
+    ss.setdefault("relatorio_processado", False)
+    ss.setdefault("sentenca_texto", None)
+    ss.setdefault("sentenca_processada", False)
+    ss.setdefault("sentenca_bytes", None)
+    ss.setdefault("referencias_bytes", None)
+    ss.setdefault("numero_processo", None)
+
     st.header("1. Extração do Relatório")
     uploaded_pdf = st.file_uploader("📎 Envie um processo em PDF", type=["pdf"])
 
@@ -227,44 +221,34 @@ def main_app():
         progress = st.progress(0)
         files = {"pdf": (uploaded_pdf.name, uploaded_pdf.getvalue(), "application/pdf")}
 
-        # 1️⃣ Tenta STREAMING primeiro
+        # 1️⃣ Streaming primeiro
         try:
-            progress.progress(5)
-            status.text("🔄 Processando via streaming (SSE)…")
+            status.text("🔄 Streaming…")
             client = post_stream_sse(f"{API_URL}/stream/processar", files, timeout=TIMEOUT)
             relatorio_raw = ""
             for event in client.events():
-                if event.event == "message":
-                    status.text(event.data)
-                elif event.event == "complete":
+                if event.event == "complete":
                     relatorio_raw = event.data
                     break
             if not relatorio_raw:
-                raise ValueError("Streaming não retornou relatório")
-
+                raise ValueError("Streaming vazio")
         except (requests.exceptions.SSLError, requests.exceptions.Timeout, SSEClientError, ValueError):
-            # 2️⃣ Fallback para endpoint síncrono
-            status.warning("⚠️ Streaming falhou, tentando modo síncrono…")
+            status.warning("⚠️ Streaming falhou; modo síncrono…")
             resp = requests.post(f"{API_URL}/processar", files=files, timeout=TIMEOUT)
             if resp.status_code != 200:
-                status.error(f"❌ Erro {resp.status_code}: {resp.text}")
+                status.error(f"❌ {resp.status_code}: {resp.text}")
                 return
             relatorio_raw = resp.json().get("relatorio", "")
 
-        # ─ Pós‑processamento do texto ─
-        progress.progress(85)
-        relatorio_clean = limpar_relatorio(relatorio_raw)
-        if len(relatorio_clean) < 30:
-            status.error("Relatório retornou vazio ou muito curto.")
+        relatorio = limpar_relatorio(relatorio_raw)
+        if len(relatorio) < 30:
+            status.error("Relatório vazio ou curto.")
             return
-
-        ss.relatorio = relatorio_clean
-        ss.numero_processo = extrair_numero_processo(relatorio_clean)
+        ss.relatorio = relatorio
+        ss.numero_processo = extrair_numero_processo(relatorio)
         ss.relatorio_processado = True
-        progress.progress(100)
-        status.success("✅ Relatório extraído com sucesso!")
         st.experimental_rerun()
-
+  
     # ───────────────────────────── Download do Relatório ────────────────────
     if st.session_state.relatorio and st.session_state.relatorio_processado:
         # Mostra informações do processo
