@@ -1,111 +1,165 @@
 
-"""
-streamlit_app.py — JUSTINO v2.2
+import streamlit as st
 
-A versão anterior tentava usar o endpoint síncrono primeiro e, quando ele falhava,
-caía num fallback streaming que por vezes disparava
-`SSLEOFError: EOF occurred in violation of protocol` no proxy TLS do Railway.
-O fluxo foi invertido para **priorizar o streaming** (mais leve para uploads até
-~200 MB) e, caso qualquer falha de TLS/timeout ocorra, recuar para o endpoint
-síncrono `/processar`.
-
-Principais mudanças:
-────────────────────
-• Função utilitária `post_stream_sse()` com cabeçalho correto
-  `Accept: text/event-stream` e heartbeat interno.
-• Captura explícita de `requests.exceptions.SSLError` para evitar exceções não
-  tratadas quando o proxy fecha o túnel.
-• Tempo‑máximo configurável: env `JUSTINO_TIMEOUT` (default 600 s).
-• Barreiras de progresso simplificadas.
-
-OBS.: backend precisa emitir ao menos um byte a cada 25 s. Caso contrário, o
-Railway corta a conexão. Ver commit `backend/routers/pdf.py`.
-"""
+st.set_page_config(page_title="Justino — Assessor Digital", page_icon="⚖️", layout="wide")
 
 import os
-import re
-import json
-import time
-from datetime import datetime
-from io import BytesIO
-
 import requests
 import streamlit as st
 from dotenv import load_dotenv
-from docx import Document
 from sseclient import SSEClient
+from datetime import datetime
+import re
+from io import BytesIO
+from docx import Document
+import json
 
-# ─── Configuração básica ────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="Justino — Assessor Digital",
-    page_icon="⚖️",
-    layout="wide",
-)
+# Import do sistema de autenticação
+from auth_tjpe import require_authentication, show_admin_panel
 
 load_dotenv()
-API_URL: str = os.getenv("API_URL", "http://localhost:8001").rstrip("/")
-TIMEOUT: int = int(os.getenv("JUSTINO_TIMEOUT", 600))  # segundos
+API_URL = os.getenv("API_URL", "http://localhost:8001")
 
-# Import do sistema de autenticação (mantido)
-from auth_tjpe import require_authentication, show_admin_panel  # noqa: E402
-
-# ─── Utilidades de rede ─────────────────────────────────────────────────────
-
-def post_stream_sse(url: str, files: dict, timeout: int = 600):
-    """Dispara POST streaming (SSE) e devolve um gerador de eventos.
-
-    Inclui cabeçalho `Accept: text/event-stream` para proxies TLS não fecharem
-    a conexão prematuramente.
+def limpar_relatorio(texto_bruto):
     """
-    resp = requests.post(
-        url,
-        files=files,
-        stream=True,
-        timeout=timeout,
-        headers={"Accept": "text/event-stream"},
-    )
-    resp.raise_for_status()
-    return SSEClient(resp)
-
-
-def limpar_relatorio(texto_bruto: str) -> str:
-    """Remove tags, escapings e ruído do relatório bruto."""
+    Remove tags, formatação e outros elementos indesejados do relatório
+    """
     if not texto_bruto:
         return ""
+        
+    # Salva o original para fallback
     original_len = len(texto_bruto)
-    texto = re.sub(r"\[TextBlock\([^]]*\)\]", "", texto_bruto)
-    texto = re.sub(r"TextBlock\([^)]*\)", "", texto)
-    if texto.startswith("data:"):
+        
+    # Remove tags completas como [TextBlock(citations=None, text="...")]
+    texto = re.sub(r'\[TextBlock\([^]]*\)\]', '', texto_bruto)
+        
+    # Remove padrões específicos como "TextBlock(citations=None, text='"
+    texto = re.sub(r'TextBlock\([^)]*\)', '', texto)
+        
+    # Remove data: no início se houver
+    if texto.startswith('data:'):
         texto = texto[5:].strip()
-    texto = re.sub(r"citations=None,\s*text=", "", texto)
-    texto = re.sub(r"type='text'", "", texto)
-    texto = texto.strip("\"'").replace("\\\"", "\"")
-    texto = texto.replace("\\n", "\n").replace("\\t", "\t")
-    texto = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "", texto)
-    linhas_limpas = [l.strip() for l in texto.split("\n") if l.strip() and not re.match(r"^[\[\](),.;:'\"\\/-]+$", l.strip())]
-    relatorio_final = re.sub(r"\n{3,}", "\n\n", "\n\n".join(linhas_limpas)).strip()
-    if len(relatorio_final) < original_len * 0.1 and original_len > 100:
+        
+    # Remove padrões como "citations=None, text="
+    texto = re.sub(r'citations=None,\s*text=', '', texto)
+    texto = re.sub(r'citations=[^,]*,\s*text=', '', texto)
+    texto = re.sub(r"type='text'", '', texto)
+        
+    # Remove aspas extras e caracteres de controle
+    texto = texto.strip('"\'')
+    texto = texto.replace("'", "'")  # Aspas simples
+    texto = texto.replace('\\"', '"')  # Aspas duplas escapadas
+        
+    # Remove padrões de escape
+    texto = texto.replace('\\n', '\n')
+    texto = texto.replace('\\t', '\t')
+    texto = texto.replace('\\r', '')
+        
+    # Remove caracteres de controle residuais
+    texto = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', texto)
+        
+    # Processa linhas
+    linhas = texto.split('\n')
+    linhas_limpas = []
+        
+    for linha in linhas:
+        linha_limpa = linha.strip()
+        # Remove linhas que são apenas pontuação ou caracteres especiais
+        if linha_limpa and not re.match(r'^[\[\](),.;:\'"\\/-]+$', linha_limpa):
+            linhas_limpas.append(linha_limpa)
+        
+    # Junta as linhas com quebra dupla para parágrafos
+    relatorio_final = '\n\n'.join(linhas_limpas)
+        
+    # Remove quebras de linha excessivas
+    relatorio_final = re.sub(r'\n{3,}', '\n\n', relatorio_final)
+        
+    resultado = relatorio_final.strip()
+        
+    # Se a limpeza removeu mais de 90% do conteúdo, retorna o original
+    if len(resultado) < (original_len * 0.1) and original_len > 100:
+        print(f"⚠️ Limpeza removeu muito conteúdo ({len(resultado)}/{original_len}), usando original")
         return texto_bruto.strip()
-    return relatorio_final
+        
+    return resultado
 
-
-def extrair_numero_processo(texto: str):
-    """Extrai o número do processo no padrão CNJ."""
+def extrair_numero_processo(texto):
+    """
+    Extrai o número do processo do texto do relatório
+    """
     if not texto:
         return None
-    padrao = r"\b\d{7}-\d{2}\.\d{4}\.\d{1}\.\d{2}\.\d{4}\b"
-    m = re.search(padrao, texto)
-    return m.group(0) if m else None
+        
+    # Padrões comuns de número de processo (ordem de prioridade)
+    padroes = [
+        # Formato CNJ padrão: 0000000-00.0000.0.00.0000 (mais comum no PJe)
+        r'\b\d{7}-\d{2}\.\d{4}\.\d{1}\.\d{2}\.\d{4}\b',
+            
+        # Formato CNJ com mais dígitos: 0000000000-00.0000.0.00.0000
+        r'\b\d{10}-\d{2}\.\d{4}\.\d{1}\.\d{2}\.\d{4}\b',  
+            
+        # Formato antigo: 0000.00.000000-0
+        r'\b\d{4}\.\d{2}\.\d{6}-\d{1}\b',
+            
+        # Padrões com texto: "Número: 0000000-00.0000.0.00.0000"
+        r'(?:número|processo|autos)(?:\s*:?\s*|\s+n[º°]?\.?\s*)(\d{7}-\d{2}\.\d{4}\.\d{1}\.\d{2}\.\d{4})',
+            
+        # Padrões com texto mais genéricos
+        r'(?:processo|autos)(?:\s+n[º°]?\.?\s*|\s+)(\d+[-\.\d]+)',
+    ]
+        
+    for i, padrao in enumerate(padroes):
+        matches = re.findall(padrao, texto, re.IGNORECASE)
+        if matches:
+            # Para padrões com grupo de captura, pega o grupo
+            if i >= 3:  # Padrões com grupos de captura
+                numero = matches[0] if isinstance(matches[0], str) else matches[0]
+            else:  # Padrões diretos
+                numero = matches[0]
+                
+            # Validação adicional para formato CNJ
+            if re.match(r'\d{7}-\d{2}\.\d{4}\.\d{1}\.\d{2}\.\d{4}', numero):
+                return numero
+            elif re.match(r'\d{10}-\d{2}\.\d{4}\.\d{1}\.\d{2}\.\d{4}', numero):
+                return numero
+            elif len(numero) > 10:  # Outros formatos longos
+                return numero
+        
+    return None
 
+def gerar_nome_arquivo_sentenca(numero_processo=None):
+    """
+    Gera um nome de arquivo inteligente para a sentença
+    """
+    if numero_processo:
+        # Remove caracteres especiais do número do processo
+        numero_limpo = numero_processo.replace('-', '').replace('.', '').replace('/', '')
+        return f"sentenca_{numero_limpo}_{datetime.now().strftime('%Y%m%d')}.docx"
+    else:
+        return f"sentenca_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
 
-def gerar_nome_arquivo_sentenca(numero: str | None = None) -> str:
-    """Gera nome de arquivo com timestamp e número do processo."""
-    if numero:
-        numero = re.sub(r"[-./]", "", numero)
-        return f"sentenca_{numero}_{datetime.now():%Y%m%d}.docx"
-    return f"sentenca_{datetime.now():%Y%m%d_%H%M%S}.docx"
+@require_authentication
+def main_app():
+    """Aplicação principal protegida por autenticação"""
+    
+    # inicializa session state
+    if "relatorio" not in st.session_state:
+        st.session_state.relatorio = None
+    if "relatorio_processado" not in st.session_state:
+        st.session_state.relatorio_processado = False
 
-    # Sidebar e instruções (idêntico – omitido neste trecho para brevidade)
+    # inicializa session state para sentença
+    if "sentenca_texto" not in st.session_state:
+        st.session_state.sentenca_texto = None
+    if "sentenca_processada" not in st.session_state:
+        st.session_state.sentenca_processada = False
+    if "sentenca_bytes" not in st.session_state:
+        st.session_state.sentenca_bytes = None
+    if "referencias_bytes" not in st.session_state:
+        st.session_state.referencias_bytes = None
+    if "numero_processo" not in st.session_state:
+        st.session_state.numero_processo = None # Garante que sempre começa como None ou valor padrão
+
     # ═══════════════════════════════ BARRA LATERAL ═══════════════════════════════
     st.sidebar.title("📋 Instruções de Uso")
     #         # Informações do usuário logado
@@ -200,55 +254,123 @@ def gerar_nome_arquivo_sentenca(numero: str | None = None) -> str:
 
     st.markdown("<br><br><br><br>", unsafe_allow_html=True)
 
-# ─── App principal ───────────────────────────────────────────────────────────
-
-@require_authentication
-def main_app():
-    ss = st.session_state
-    ss.setdefault("relatorio", None)
-    ss.setdefault("relatorio_processado", False)
-    ss.setdefault("sentenca_texto", None)
-    ss.setdefault("sentenca_processada", False)
-    ss.setdefault("sentenca_bytes", None)
-    ss.setdefault("referencias_bytes", None)
-    ss.setdefault("numero_processo", None)
-
+    # ─────────────────────────────── Seção 1 ──────────────────────────────────
     st.header("1. Extração do Relatório")
-    uploaded_pdf = st.file_uploader("📎 Envie um processo em PDF", type=["pdf"])
 
-    if uploaded_pdf and st.button("🔍 Extrair Relatório"):
-        status = st.empty()
-        progress = st.progress(0)
-        files = {"pdf": (uploaded_pdf.name, uploaded_pdf.getvalue(), "application/pdf")}
+    st.markdown("<br>", unsafe_allow_html=True)
 
-        # 1️⃣ Streaming primeiro
-        try:
-            status.text("🔄 Streaming…")
-            client = post_stream_sse(f"{API_URL}/stream/processar", files, timeout=TIMEOUT)
-            relatorio_raw = ""
-            for event in client.events():
-                if event.event == "complete":
-                    relatorio_raw = event.data
-                    break
-            if not relatorio_raw:
-                raise ValueError("Streaming vazio")
-        except (requests.exceptions.SSLError, requests.exceptions.Timeout, ValueError):
-            status.warning("⚠️ Streaming falhou; modo síncrono…")
-            resp = requests.post(f"{API_URL}/processar", files=files, timeout=TIMEOUT)
-            if resp.status_code != 200:
-                status.error(f"❌ {resp.status_code}: {resp.text}")
-                return
-            relatorio_raw = resp.json().get("relatorio", "")
+    uploaded_pdf = st.file_uploader("📎 Envie um processo em PDF", type=["pdf"], key="uploader_pdf")
 
-        relatorio = limpar_relatorio(relatorio_raw)
-        if len(relatorio) < 30:
-            status.error("Relatório vazio ou curto.")
-            return
-        ss.relatorio = relatorio
-        ss.numero_processo = extrair_numero_processo(relatorio)
-        ss.relatorio_processado = True
-        st.experimental_rerun()
-  
+    if uploaded_pdf:
+        if st.button("🔍 Extrair Relatório", key="btn_extrair"):
+            status = st.empty()
+            progress_bar = st.progress(0)
+                
+            status.text("🔄 Enviando PDF para extração...")
+            files = {"pdf": (uploaded_pdf.name, uploaded_pdf.getvalue(), "application/pdf")}
+                
+            try:
+                # ESTRATÉGIA PRINCIPAL: Usar endpoint direto que sabemos que funciona
+                progress_bar.progress(20)
+                status.text("📋 Processando via endpoint direto...")
+                    
+                # Mostra aviso sobre tempo de processamento
+                time_warning = st.empty()
+                time_warning.info("⏱️ O processamento pode demorar alguns minutos dependendo do tamanho do arquivo. Aguarde...")
+                    
+                with st.spinner("Extraindo relatório..."):
+                    resp_direct = requests.post(f"{API_URL}/processar", files=files, timeout=None)  # 10 minutos
+                    
+                time_warning.empty()  # Remove o aviso após o processamento
+                    
+                if resp_direct.status_code == 200:
+                    progress_bar.progress(80)
+                    result = resp_direct.json()
+                        
+                    if 'relatorio' in result:
+                        relatorio_bruto = result['relatorio']
+                            
+                        if len(relatorio_bruto) > 50:
+                            # Limpa o relatório antes de armazenar
+                            relatorio_limpo = limpar_relatorio(relatorio_bruto)
+                                
+                            if len(relatorio_limpo) > 20:  # Reduz o threshold
+                                st.session_state.relatorio = relatorio_limpo
+                                    
+                                # Extrai número do processo e armazena na sessão
+                                # Garante que numero_processo seja uma string (ou None)
+                                st.session_state.numero_processo = extrair_numero_processo(relatorio_limpo)
+                                
+                                progress_bar.progress(100)
+                                st.session_state.relatorio_processado = True
+                                status.success("✅ Relatório extraído com sucesso!")
+                                    
+                                # Limpa a barra de progresso e força atualização
+                                progress_bar.empty()
+                                st.rerun()
+                            else:
+                                progress_bar.empty()
+                                status.error(f"❌ Relatório muito pequeno após limpeza: {len(relatorio_limpo)} caracteres")
+                        else:
+                            progress_bar.empty()
+                            status.error(f"❌ Relatório muito pequeno: {len(relatorio_bruto)} caracteres")
+                    else:
+                        progress_bar.empty()
+                        status.error("❌ Resposta da API não contém relatório")
+                else:
+                    progress_bar.empty()
+                    status.error(f"❌ Erro {resp_direct.status_code}: {resp_direct.text}")
+                        
+                    # FALLBACK: Tenta streaming como segunda opção
+                    status.text("🔄 Tentando método streaming como fallback...")
+                        
+                    try:
+                        with st.spinner("Tentando extração via streaming..."):
+                            resp_stream = requests.post(f"{API_URL}/stream/processar", files=files, stream=True, timeout=None)
+                            
+                        if resp_stream.status_code == 200:
+                            # Processa stream usando SSEClient
+                            try:
+                                client = SSEClient(resp_stream)
+                                for event in client.events():
+                                    if event.event == "message":
+                                        status.text(event.data)
+                                    elif event.event == "complete":
+                                        # O backend retorna o relatório diretamente no data do evento complete
+                                        relatorio_bruto = event.data
+                                        relatorio_limpo = limpar_relatorio(relatorio_bruto)
+                                        st.session_state.relatorio = relatorio_limpo
+                                            
+                                        # Extrai número do processo
+                                        st.session_state.numero_processo = extrair_numero_processo(relatorio_limpo)
+                                            
+                                        st.session_state.relatorio_processado = True
+                                        status.success("✅ Relatório extraído via streaming!")
+                                        st.rerun()
+                                        break
+                                    elif event.event == "error":
+                                        status.error(f"❌ Erro no streaming: {event.data}")
+                                        break
+                            except Exception as e:
+                                status.error(f"❌ Erro ao processar streaming: {str(e)}")
+                        else:
+                            status.error(f"❌ Streaming também falhou: {resp_stream.status_code}")
+                            
+                    except Exception as e:
+                        status.error(f"❌ Erro no fallback streaming: {str(e)}")
+                        
+            except requests.exceptions.Timeout:
+                progress_bar.empty()
+                status.error("⏱️ Timeout na geração (10 minutos). O processamento pode estar demorando mais que o esperado. Tente novamente.")
+                
+            except requests.exceptions.ConnectionError:
+                progress_bar.empty()
+                status.error("🔌 Erro de conexão. Verifique se o servidor está funcionando.")
+                
+            except Exception as e:
+                progress_bar.empty()
+                status.error(f"❌ Erro inesperado: {str(e)}")
+
     # ───────────────────────────── Download do Relatório ────────────────────
     if st.session_state.relatorio and st.session_state.relatorio_processado:
         # Mostra informações do processo
@@ -405,7 +527,7 @@ def main_app():
                           "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
                         for f in arquivos_ref or []
                     ],
-                    timeout=1800  # 10 minutos
+                    timeout=600  # 10 minutos
                 )
                 
             time_warning.empty()  # Remove o aviso após o processamento
