@@ -232,7 +232,7 @@ def main_app():
                     break
             if not relatorio_raw:
                 raise ValueError("Streaming vazio")
-        except (requests.exceptions.SSLError, requests.exceptions.Timeout, SSEClientError, ValueError):
+        except (requests.exceptions.SSLError, requests.exceptions.Timeout, ValueError):
             status.warning("⚠️ Streaming falhou; modo síncrono…")
             resp = requests.post(f"{API_URL}/processar", files=files, timeout=TIMEOUT)
             if resp.status_code != 200:
