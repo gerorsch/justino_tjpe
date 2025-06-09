@@ -33,7 +33,7 @@ import requests
 import streamlit as st
 from dotenv import load_dotenv
 from docx import Document
-from sseclient import SSEClient, SSEClientError
+from sseclient import SSEClient
 
 # ─── Configuração básica ────────────────────────────────────────────────────
 st.set_page_config(
