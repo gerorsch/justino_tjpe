@@ -25,7 +25,7 @@ from pypdf import PdfReader
 # ───────────────────────────────────────── config ──────────────────────────
 @dataclass
 class Config:
-    summary_model: str = os.getenv("SUMMARY_MODEL", "gpt-3.5-turbo")
+    summary_model: str = os.getenv("SUMMARY_MODEL", "gpt-4.1-mini")
     report_model:  str = os.getenv("REPORT_MODEL",  "claude-sonnet-4-20250514")
     temperature:   float = float(os.getenv("TEMPERATURE", 0.3))
     max_tokens:    int = int(os.getenv("MAX_TOKENS", 2048))
