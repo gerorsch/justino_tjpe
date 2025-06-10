@@ -6,15 +6,18 @@ import re
 import sys
 import textwrap
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from types import SimpleNamespace
+import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 load_dotenv()
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
+from langchain.llms.base import BaseLLM
 import anthropic
 from pypdf.errors import PdfReadError
 from pypdf import PdfReader
@@ -22,12 +25,12 @@ from pypdf import PdfReader
 # ───────────────────────────────────────── config ──────────────────────────
 @dataclass
 class Config:
-    summary_model: str = os.getenv("SUMMARY_MODEL", "gpt-4o-mini")
+    summary_model: str = os.getenv("SUMMARY_MODEL", "gpt-3.5-turbo")
     report_model:  str = os.getenv("REPORT_MODEL",  "claude-sonnet-4-20250514")
     temperature:   float = float(os.getenv("TEMPERATURE", 0.3))
     max_tokens:    int = int(os.getenv("MAX_TOKENS", 2048))
-    fallback_chars:int = int(os.getenv("FALLBACK_CHARS", 8000))
-    verbose:       bool  = os.getenv("VERBOSE", "true").lower() in ("1","true","yes","t")
+    fallback_chars:int = int(os.getenv("FALLBACK_CHARS", 10000))
+    verbose:       bool  = os.getenv("VERBOSE", "false").lower() in ("1","true","yes","t")
 
 def log(msg: str, cfg: Config):
     if cfg.verbose:
@@ -342,19 +345,15 @@ def get_llm(model: str, cfg: Config):
     else:
         return ChatOpenAI(model_name=model, temperature=cfg.temperature, max_tokens=cfg.max_tokens)
 
-def summarize(text: str, cfg: Config) -> str:
+def summarize(text: str, llm: BaseLLM, cfg: Config) -> str:
     try:
-        llm = get_llm(cfg.summary_model, cfg)
         resp = (SUMMARY_PT | llm).invoke({"texto": text})
-        
-        # CORREÇÃO: Usa função auxiliar para extrair texto de forma segura
         content = _extract_text_safely(resp)
         return content.strip()
-    
     except Exception as e:
         print(f"Erro na função summarize: {e}", file=sys.stderr)
-        # Retorna um resumo básico em caso de erro
         return f"Documento processado com {len(text)} caracteres."
+
 
 def build_report(atos: str, process_number: Optional[str], cfg: Config) -> str:
     """
@@ -425,6 +424,14 @@ def generate(
     cfg: Config,
     on_progress: Optional[Callable[[str], None]] = None
 ) -> str:
+    summary_llm = get_llm(cfg.summary_model, cfg)
+    # ── CACHE: se já houver relatório para este PDF, retorna imediatamente
+
+    digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
+    cache_path = Path(f"/tmp/report_{digest}.txt")
+    if cache_path.exists():
+        log("♻️  Usando relatório em cache", cfg)
+        return cache_path.read_text(encoding="utf-8")
     try:
         # 1) Carrega o PDF, com fallback em caso de PdfReadError
         try:
@@ -457,31 +464,53 @@ def generate(
 
         # 3) Lê e resume chunks
         linhas: List[str] = []
+
+        # 1) Primeiro, monte a lista de (label, texto) a resumir
+        chunks_para_resumir: List[Tuple[str, str]] = []
         for label, blocos in grupos.items():
             sec_msg = f"🔍 Lendo seção '{label}' ({len(blocos)} chunks)"
             log(sec_msg, cfg)
             if on_progress:
                 on_progress(sec_msg)
-            for bi, bl in enumerate(blocos, start=1):
-                chunk_msg = f"   • {label} (chunk {bi}/{len(blocos)})"
-                log(chunk_msg, cfg)
-                if on_progress:
-                    on_progress(chunk_msg)
-                if len(bl) > cfg.fallback_chars:
-                    parts = [bl[i : i + cfg.fallback_chars] for i in range(0, len(bl), cfg.fallback_chars)]
-                    for pi, pt in enumerate(parts, start=1):
-                        sub_msg = f"      ↳ subchunk {pi}/{len(parts)}"
-                        log(sub_msg, cfg)
-                        if on_progress:
-                            on_progress(sub_msg)
-                        summary_result = summarize(pt, cfg)
-                        # Limpa possíveis artefatos de TextBlock
-                        linhas.append(clean_textblock_artifacts(summary_result))
-                else:
-                    summary_result = summarize(bl, cfg)
-                    # Limpa possíveis artefatos de TextBlock
-                    linhas.append(clean_textblock_artifacts(summary_result))
 
+            # Junta todos os blocos da seção
+            texto_secao = "\n".join(blocos)
+
+            # Se for muito grande, divide em sub-chunks grandes
+            if len(texto_secao) > cfg.fallback_chars:
+                parts = [
+                    texto_secao[i : i + cfg.fallback_chars]
+                    for i in range(0, len(texto_secao), cfg.fallback_chars)
+                ]
+            else:
+                parts = [texto_secao]
+
+            # Registra cada parte para resumir depois
+            for pi, part in enumerate(parts, start=1):
+                if len(parts) > 1:
+                    sub_msg = f"   ↳ subchunk {pi}/{len(parts)}"
+                    log(sub_msg, cfg)
+                    if on_progress:
+                        on_progress(sub_msg)
+                chunks_para_resumir.append((label, part))
+
+        # 2) Agora, faça efetivamente menos chamadas ao LLM
+        # (supondo que você já tenha summary_llm = get_llm(...) criado fora)
+       # 2) Paraleliza chamadas de resumo
+        # (substitui o loop sequencial por ThreadPoolExecutor)
+
+        def _job(label_text):
+            label, texto = label_text
+            # use summary_llm diretamente (ou adapte summarize to accept llm)
+            resumo = summary_llm.predict(texto)
+            return clean_textblock_artifacts(resumo)
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = { pool.submit(_job, lt): lt for lt in chunks_para_resumir }
+            for fut in as_completed(futures):
+                linhas.append(fut.result())
+
+        # 3) Concatena tudo para gerar o report
         atos = "\n".join(linhas)
 
         # 4) Construção do relatório final
@@ -495,6 +524,7 @@ def generate(
         
         # LIMPEZA FINAL: Remove qualquer artefato de TextBlock restante
         report_limpo = clean_textblock_artifacts(report)
+        cache_path.write_text(report_limpo, encoding="utf-8")
         
         done_msg = "✅ Relatório pronto"
         log(done_msg, cfg)
