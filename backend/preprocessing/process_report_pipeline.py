@@ -102,6 +102,24 @@ def extract_process_number(first_page_text: str) -> Optional[str]:
     
     return None
 
+
+def extract_id_from_text(text: str) -> Optional[str]:
+    """
+    Procura padrões de ID no rodapé:
+     - “ID 12345” ou “ID: 12345”
+     - “Num. 12345” ou “Núm. 12345”
+    """
+    patterns = [
+        r"\bID\s*[:\-]?\s*(\d+)\b",
+        r"(?:Num\.|Núm\.)\s*(\d+)"
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return None
+
+
 def group_pages(pages: List, cfg: Config) -> tuple[Dict[str, List[str]], Optional[str]]:
     """
     Agrupa páginas por tipo de peça e extrai número do processo da primeira página
@@ -110,6 +128,8 @@ def group_pages(pages: List, cfg: Config) -> tuple[Dict[str, List[str]], Optiona
     cur: Optional[str] = None
     buf: List[str] = []
     process_number = None
+    # mapa de label -> ID capturado do rodapé
+    section_id_map: Dict[str,str] = {}
     
     for i, p in enumerate(pages):
         # Extrai número do processo da primeira página
@@ -125,6 +145,10 @@ def group_pages(pages: List, cfg: Config) -> tuple[Dict[str, List[str]], Optiona
             if buf:
                 groups.setdefault(cur or "outros", []).append("\n".join(buf))
                 buf = []
+                # novo bloco: captura ID no início da seção
+            page_id = extract_id_from_text(p.page_content)
+            if page_id:
+                section_id_map[lab] = page_id
             cur = lab
             log(f"→ nova peça '{lab}' na página {i+1}", cfg)
         buf.append(p.page_content)
@@ -132,7 +156,7 @@ def group_pages(pages: List, cfg: Config) -> tuple[Dict[str, List[str]], Optiona
     if buf:
         groups.setdefault(cur or "outros", []).append("\n".join(buf))
     
-    return groups, process_number
+    return groups, process_number, section_id_map
 
 # ─────────────────────────────── prompts ──────────────────────────────────
 SUMMARY_PT = PromptTemplate(
@@ -157,10 +181,11 @@ INSTRUCOES_COM_PROCESSO = textwrap.dedent("""
     INSTRUÇÕES ESPECÍFICAS
     - Inicie o relatório com "Processo nº {numero_processo}"
     - Não inclua os títulos formais das peças (ex: "Petição Inicial", "Despacho", "Decisão", etc.).
+    - Cada parágrafo gerado deve terminar com “(ID <número>)”;
+    - Use exatamente o número que aparece no rodapé.
     - Identifique os atos com uma frase introdutória direta e o número do ID entre parênteses, como nos exemplos abaixo:
-      - Foi concedida a justiça gratuita (ID 36457517).
-      - Tutela de urgência deferida (ID 37574668).
-      - Réplica apresentada (ID 42715461).
+      - Foi concedida a justiça gratuita e deferida a tutela de urgência (ID ___).
+      - Réplica apresentada (ID ___).
     - Ao tratar de manifestações das partes (petições), explique brevemente seu conteúdo jurídico.
     - Na contestação, redija um parágrafo mais desenvolvido, contendo:
       - Os principais fatos narrados;
@@ -194,10 +219,11 @@ INSTRUCOES_SEM_PROCESSO = textwrap.dedent("""
 
     INSTRUÇÕES ESPECÍFICAS
     - Não inclua os títulos formais das peças (ex: "Petição Inicial", "Despacho", "Decisão", etc.).
+    - Cada parágrafo gerado deve terminar com “(ID <número>)”;
+    - Use exatamente o número que aparece no rodapé.
     - Identifique os atos com uma frase introdutória direta e o número do ID entre parênteses, como nos exemplos abaixo:
-      - Foi concedida a justiça gratuita (ID 36457517).
-      - Tutela de urgência deferida (ID 37574668).
-      - Réplica apresentada (ID 42715461).
+      - Foi concedida a justiça gratuita e deferida a tutela de urgência (ID ___).
+      - Réplica apresentada (ID ___).
     - Ao tratar de manifestações das partes (petições), explique brevemente seu conteúdo jurídico.
     - Na contestação, redija um parágrafo mais desenvolvido, contendo:
       - Os principais fatos narrados;
@@ -455,7 +481,7 @@ def generate(
             on_progress(msg)
 
         # 2) Agrupa por peça e extrai número do processo
-        grupos, process_number = group_pages(pages, cfg)
+        groups, process_number, section_id_map = group_pages(pages, cfg)
         
         if process_number:
             log(f"✅ Processo identificado: {process_number}", cfg)
@@ -465,18 +491,14 @@ def generate(
         # 3) Lê e resume chunks
         linhas: List[str] = []
 
-        # 1) Primeiro, monte a lista de (label, texto) a resumir
         chunks_para_resumir: List[Tuple[str, str]] = []
-        for label, blocos in grupos.items():
+        for label, blocos in groups.items():
             sec_msg = f"🔍 Lendo seção '{label}' ({len(blocos)} chunks)"
             log(sec_msg, cfg)
             if on_progress:
                 on_progress(sec_msg)
 
-            # Junta todos os blocos da seção
             texto_secao = "\n".join(blocos)
-
-            # Se for muito grande, divide em sub-chunks grandes
             if len(texto_secao) > cfg.fallback_chars:
                 parts = [
                     texto_secao[i : i + cfg.fallback_chars]
@@ -485,7 +507,6 @@ def generate(
             else:
                 parts = [texto_secao]
 
-            # Registra cada parte para resumir depois
             for pi, part in enumerate(parts, start=1):
                 if len(parts) > 1:
                     sub_msg = f"   ↳ subchunk {pi}/{len(parts)}"
@@ -494,17 +515,24 @@ def generate(
                         on_progress(sub_msg)
                 chunks_para_resumir.append((label, part))
 
-        # 2) Agora, faça efetivamente menos chamadas ao LLM
-        # (supondo que você já tenha summary_llm = get_llm(...) criado fora)
-       # 2) Paraleliza chamadas de resumo
-        # (substitui o loop sequencial por ThreadPoolExecutor)
+        # 2) Paraleliza chamadas de resumo + injeta ID real de cada seção
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        def _job(label_text):
+        def _job(label_text: Tuple[str,str]) -> str:
             label, texto = label_text
-            # use summary_llm diretamente (ou adapte summarize to accept llm)
-            resumo = summary_llm.predict(texto)
+
+            # 2.1) Gera o resumo do texto
+            resumo = summarize(texto, summary_llm, cfg)
+
+            # 2.2) Injeta o ID capturado do rodapé (section_id_map)
+            id_real = section_id_map.get(label)
+            if id_real:
+                resumo = resumo.rstrip(".") + f" (ID {id_real})."
+
+            # 2.3) Limpa artefatos e retorna
             return clean_textblock_artifacts(resumo)
 
+        linhas: List[str] = []
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = { pool.submit(_job, lt): lt for lt in chunks_para_resumir }
             for fut in as_completed(futures):
@@ -518,21 +546,19 @@ def generate(
         log(start_msg, cfg)
         if on_progress:
             on_progress(start_msg)
-        
-        # Passa o número do processo para o build_report
+
         report = build_report(atos, process_number, cfg)
-        
-        # LIMPEZA FINAL: Remove qualquer artefato de TextBlock restante
         report_limpo = clean_textblock_artifacts(report)
         cache_path.write_text(report_limpo, encoding="utf-8")
-        
-        done_msg = "✅ Relatório pronto"
-        log(done_msg, cfg)
-        if on_progress:
-            on_progress(done_msg)
-
         return report_limpo
-    
+                
+        # done_msg = "✅ Relatório pronto"
+        # log(done_msg, cfg)
+        # if on_progress:
+        #     on_progress(done_msg)
+
+        # return report_limpo
+        
     except Exception as e:
         error_msg = f"Erro na geração do relatório: {str(e)}"
         print(error_msg, file=sys.stderr)
