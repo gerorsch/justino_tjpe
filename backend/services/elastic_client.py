@@ -7,17 +7,31 @@ load_dotenv()
 
 class ElasticClient:
     def __init__(self):
-        cloud_id  = os.getenv("ELASTIC_CLOUD_ID")
-        api_key   = os.getenv("ELASTICSEARCH_API_KEY")
-        host      = os.getenv("ELASTICSEARCH_HOST")
+        cloud_id = os.getenv("ELASTIC_CLOUD_ID")
+        api_key  = os.getenv("ELASTICSEARCH_API_KEY")
+        host     = os.getenv("ELASTICSEARCH_HOST")
         self.index_name = os.getenv("ELASTICSEARCH_INDEX", "sentencas_rag")
 
         if cloud_id and api_key:
-            self.es = Elasticsearch(cloud_id=cloud_id, api_key=api_key)
-        elif host and api_key:
-            self.es = Elasticsearch(host, api_key=api_key, use_ssl=True, verify_certs=True)
+            # Elastic Cloud
+            self.es = Elasticsearch(
+                cloud_id=cloud_id,
+                api_key=api_key,
+                headers={"Accept": "application/vnd.elasticsearch+json; compatible-with=8"}
+            )
+        elif host:
+            # Self-hosted ES (sem segurança)
+            # não há mais use_ssl, e api_key é opcional
+            self.es = Elasticsearch(
+                hosts=[host],
+                headers={"Accept": "application/vnd.elasticsearch+json; compatible-with=8"},
+                verify_certs=host.startswith("https")
+            )
         else:
-            raise RuntimeError("🛑 Configure ELASTIC_CLOUD_ID ou ELASTICSEARCH_HOST + ELASTICSEARCH_API_KEY")
+            raise RuntimeError(
+                "🛑 Defina ELASTIC_CLOUD_ID + ELASTICSEARCH_API_KEY (para Cloud) "
+                "ou ELASTICSEARCH_HOST (para self-hosted)"
+            )
 
     def create_index(self, mappings: dict, settings: dict = None, delete_if_exists: bool = False):
         if delete_if_exists and self.es.indices.exists(index=self.index_name):
