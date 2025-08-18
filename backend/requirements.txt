@@ -27,3 +27,8 @@ sseclient-py
 sse-starlette>=1.0.6
 pdfminer.six
 PyPDF2
+jose
+asyncpg
+python-jose[cryptography]
+pydantic[email]
+email-validator

@@ -22,7 +22,13 @@ from services.docx_utils import salvar_sentenca_como_docx, salvar_docs_referenci
 from services.docx_parser import parse_docx_bytes
 from preprocessing.sentence_indexing_rag import setup_elasticsearch
 
+# main.py (trechos)
+from services.auth import router as auth_router
+from services.auth import ensure_auth_schema
+
 app = FastAPI(title="RAG TJPE API")
+
+app.include_router(auth_router)
 
 
 # Configurar CORS
@@ -114,6 +120,7 @@ async def startup_event():
     2) Garante que o índice do Elasticsearch exista e, se vazio, popule com sentenças
     """
     # ———————————— limpeza atual ————————————
+    await ensure_auth_schema()  
     print("🧹 Limpando arquivos temporários antigos...")
     now = time.time()
     patterns = ["/tmp/sentenca_*.docx", "/tmp/referencias_*.zip", "/tmp/*.pdf"]
@@ -140,6 +147,11 @@ async def startup_event():
         print(f"❌ Falha no setup do Elasticsearch: {e}")
         # opcional: raise para abortar startup
         # raise
+    try:
+        await ensure_auth_schema()  # cria tabelas/índices caso faltem
+        print("✅ Auth schema pronto")
+    except Exception as e:
+        print(f"❌ Falha ao preparar auth schema: {e}")
 
 
 
@@ -366,8 +378,8 @@ async def gerar_sentenca_endpoint(
         docs: List[dict] = []
         if arquivos_referencia:
             for upload in arquivos_referencia:
-                if not upload.filename.lower().endswith('.docx'):
-                    raise HTTPException(status_code=400, detail=f"Arquivo {upload.filename} deve ser DOCX")
+                # if not upload.filename.lower().endswith('.docx'):
+                #     raise HTTPException(status_code=400, detail=f"Arquivo {upload.filename} deve ser DOCX")
                 
                 data = await upload.read()
                 sec = parse_docx_bytes(data)
