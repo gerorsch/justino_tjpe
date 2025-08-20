@@ -32,3 +32,4 @@ asyncpg
 python-jose[cryptography]
 pydantic[email]
 email-validator
+gunicorn

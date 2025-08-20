@@ -54,7 +54,7 @@ services:
     env_file:
       - .env
     working_dir: /app
-    command: uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+    command: gunicorn -w 65 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:8001 --timeout 600
     ports:
       - "8001:8001"
     environment:
