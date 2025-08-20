@@ -41,7 +41,7 @@ def get_allowed_origins():
     production_origins = [
         "https://justino.digital",
         "https://www.justino.digital",
-        "https://api.justino.digital",
+        "https://app.justino.digital",
     ]
     
     # URLs de desenvolvimento local
