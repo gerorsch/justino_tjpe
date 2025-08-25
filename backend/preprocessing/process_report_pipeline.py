@@ -28,7 +28,7 @@ class Config:
     summary_model: str = os.getenv("SUMMARY_MODEL", "gpt-4o-mini")
     report_model:  str = os.getenv("REPORT_MODEL",  "claude-sonnet-4-20250514")
     temperature:   float = float(os.getenv("TEMPERATURE", 0.2))
-    max_tokens:    int = int(os.getenv("MAX_TOKENS", 2048))
+    max_tokens:    int = int(os.getenv("MAX_TOKENS", 64000))
     fallback_chars:int = int(os.getenv("FALLBACK_CHARS", 10000))
     verbose:       bool  = os.getenv("VERBOSE", "false").lower() in ("1","true","yes","t")
 
@@ -261,7 +261,7 @@ RELATÓRIO:""",
 
 # ─────────────────────────── wrapper Claude CORRIGIDO ─────────────────────────────
 class AnthropicClaudeWrapper:
-    def __init__(self, model: str, max_tokens: int = 2048, temperature: float = 0.2):
+    def __init__(self, model: str, max_tokens: int = 64000, temperature: float = 0.2):
         self.client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         self.model = model
         self.max_tokens = max_tokens
