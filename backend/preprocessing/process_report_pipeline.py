@@ -28,7 +28,7 @@ class Config:
     summary_model: str = os.getenv("SUMMARY_MODEL", "gpt-4o-mini")
     report_model:  str = os.getenv("REPORT_MODEL",  "claude-sonnet-4-20250514")
     temperature:   float = float(os.getenv("TEMPERATURE", 0.2))
-    max_tokens:    int = int(os.getenv("MAX_TOKENS", 16000))
+    max_tokens:    int = int(os.getenv("MAX_TOKENS", 8000))
     fallback_chars:int = int(os.getenv("FALLBACK_CHARS", 10000))
     verbose:       bool  = os.getenv("VERBOSE", "false").lower() in ("1","true","yes","t")
 
